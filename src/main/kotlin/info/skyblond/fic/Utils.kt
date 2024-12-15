@@ -18,3 +18,14 @@ private fun callB3sum(vararg args: String): String {
 fun testB3sum(): String = callB3sum("-V")
 
 fun File.b3sum(): String = callB3sum("-l", "32", "--no-names", this.absolutePath)
+
+/**
+ * Calculate the MB/s for a give file. Both [start] and [end] is in milliseconds.
+ * */
+fun File.calculateRate(start: Long, end: Long): Double {
+    // dt in second
+    val dt = (end - start).coerceAtLeast(1) / 1000.0
+    // size in MB
+    val size = this.length() / 1024.0 / 1024.0
+    return size / dt
+}

@@ -19,7 +19,6 @@ import java.io.FileFilter
 import java.util.*
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
-import java.util.concurrent.Future
 
 class MainCommand : CliktCommand(
     name = "fic"
@@ -31,13 +30,17 @@ class MainCommand : CliktCommand(
         .defaultLazy { (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1) }
 
     private val append: Boolean by option("-a", "--append")
-        .help("Append new files").flag()
+        .help("Append new files: calculate file hash and add to the record").flag()
     private val update: Boolean by option("-u", "--update")
-        .help("Update modified files").flag()
+        .help("Update modified files: calculate file hash and update the record").flag()
     private val remove: Boolean by option("-r", "--remove")
-        .help("Remove deleted files").flag()
+        .help("Remove deleted files: delete file hash from the record").flag()
     private val verify: Boolean by option("-v", "--verify")
-        .help("Verify existing non-modified files").flag()
+        .help(
+            "Verify existing non-modified files: calculate file hash and compare with record, " +
+                    "if and only if the file is not modified " +
+                    "(by checking file length and last modified time)"
+        ).flag()
 
     private val folders: List<File> by argument(name = "folder").file(
         mustExist = true,
@@ -45,7 +48,6 @@ class MainCommand : CliktCommand(
         canBeDir = true
     ).multiple().help("The data folder")
 
-    private val folderPool by lazy { Executors.newVirtualThreadPerTaskExecutor() }
     private val hashPool by lazy { Executors.newFixedThreadPool(parallelism) }
 
     override fun run() {
@@ -53,7 +55,6 @@ class MainCommand : CliktCommand(
         logOptions()
         val folderQueue = LinkedList<File>()
         folderQueue.addAll(folders)
-        val taskQueue = LinkedList<Future<*>>()
         // this is essentially a snapshot.
         // we will grab all folders and files as quick as possible,
         // then process them later
@@ -68,19 +69,9 @@ class MainCommand : CliktCommand(
             val files = dir.listFiles(FileFilter {
                 it.isFile && !it.name.startsWith(".") && it.name != CHECKSUM_FILENAME
             })?.toList() ?: emptyList()
-            taskQueue.add(folderPool.submit { processFiles(dir, files) })
+            processFiles(dir, files)
         }
-        taskQueue.forEach {
-            // find the cause (CliktError) and throw it
-            var cause = kotlin.runCatching { it.get() }.exceptionOrNull()?.cause
-            while (cause != null && cause !is CliktError) {
-                cause = cause.cause
-            }
-            if (cause != null) {
-                throw cause
-            }
-        }
-        folderPool.shutdown()
+        // shutdown hash pool
         hashPool.shutdown()
     }
 
@@ -118,13 +109,19 @@ class MainCommand : CliktCommand(
         // calculate hash for new files
         newFiles.forEach { f ->
             newChecksumFutures.add(CompletableFuture.supplyAsync({
+                info { "Calculating checksum for file: $f" }
+                val st = System.currentTimeMillis()
                 ChecksumRecord(
                     filename = f.name,
                     size = f.length(),
                     lastModified = f.lastModified(),
                     hash = f.b3sum()
                 ).also {
-                    info { "New file hash ${it.hash} for $f" }
+                    val et = System.currentTimeMillis()
+                    info {
+                        "New file hash ${it.hash} for $f " +
+                                "(${"%.2f".format(f.calculateRate(st, et))}MB/s)"
+                    }
                 }
             }, hashPool))
         }
@@ -139,14 +136,27 @@ class MainCommand : CliktCommand(
                     if (!update) {
                         throw CliktError("Modified files not allow: $f")
                     }
-                    f.createChecksum().also {
-                        info { "Modified file hash ${it.hash} for $f" }
+                    info { "Calculating checksum for file: $f" }
+                    val st = System.currentTimeMillis()
+                    ChecksumRecord(
+                        filename = f.name,
+                        size = f.length(),
+                        lastModified = f.lastModified(),
+                        hash = f.b3sum()
+                    ).also {
+                        val et = System.currentTimeMillis()
+                        info {
+                            "Modified file hash ${it.hash} for $f "
+                            "(${"%.2f".format(f.calculateRate(st, et))}MB/s)"
+                        }
                     }
                 }
             }, hashPool))
         }
-        // TODO: Save to file
-        saveChecksumFileInFolder(dir, newChecksumFutures.map { it.get() }.sortedBy { it.filename })
+        // save to file
+        val result = newChecksumFutures.map { it.get() }.sortedBy { it.filename }
+        debug { "Saving result for folder $dir" }
+        saveChecksumFileInFolder(dir, result)
     }
 
     private fun saveChecksumFileInFolder(folder: File, checksums: List<ChecksumRecord>) {
@@ -159,25 +169,24 @@ class MainCommand : CliktCommand(
         }
     }
 
-    private fun File.createChecksum() = ChecksumRecord(
-        filename = this.name,
-        size = this.length(),
-        lastModified = this.lastModified(),
-        hash = this.b3sum()
-    )
-
     private fun verifyFile(file: File, checksum: ChecksumRecord) {
         if (verify) {
+            info { "Calculating checksum for file: $file" }
+            val st = System.currentTimeMillis()
             val actualHash = file.b3sum()
+            val et = System.currentTimeMillis()
             if (actualHash != checksum.hash) {
                 throw CliktError( // break the normal flow
                     "Hash mismatch: expect: ${checksum.hash}, actual: $actualHash, file: $file"
                 )
             } else {
-                info { "Verified hash $actualHash for $file" }
+                info {
+                    "Verified hash $actualHash for $file " +
+                            "(${"%.2f".format(file.calculateRate(st, et))}MB/s)"
+                }
             }
         } else {
-            warn { "Skip verify for $file" }
+            debug { "Skip verify for $file" }
         }
     }
 
@@ -201,24 +210,24 @@ class MainCommand : CliktCommand(
     private fun logOptions() {
         info { "Parallelism: $parallelism" }
         if (append) {
-            info { "Will calculate new files and append to the result" }
+            warn { "Will calculate new files and append to the result" }
         } else {
             warn { "Will throw error on new files" }
         }
         if (update) {
-            info { "Will update the hash of modified files" }
+            warn { "Will update the hash of modified files" }
         } else {
             warn { "Will throw error on modified files" }
         }
         if (remove) {
-            info { "Will remove deleted files" }
+            warn { "Will remove deleted files" }
         } else {
             warn { "Will throw error on deleted files" }
         }
         if (verify) {
-            info { "Will verify the hash of existing non-modified files" }
+            warn { "Will verify the hash of existing non-modified files" }
         } else {
-            warn { "Will NOT verify the hash of existing non-modified files" }
+            warn { "Will NOT verify the hash of existing files" }
         }
     }
 

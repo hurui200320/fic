@@ -49,7 +49,7 @@ graalvmNative {
             buildArgs("--gc=G1")
             buildArgs("-R:MaxRAMPercentage=50")
             buildArgs("--strict-image-heap")
-            buildArgs("-march=native")
+            buildArgs("-march=x86-64-v3")
         }
     }
 }
