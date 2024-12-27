@@ -114,7 +114,6 @@ class MainCommand : CliktCommand(
                 ChecksumRecord(
                     filename = f.name,
                     size = f.length(),
-                    lastModified = f.lastModified(),
                     hash = f.b3sum()
                 ).also {
                     val et = System.currentTimeMillis()
@@ -128,7 +127,7 @@ class MainCommand : CliktCommand(
         // Process old files
         oldFiles.forEach { (f, oldChecksum) ->
             newChecksumFutures.add(CompletableFuture.supplyAsync({
-                if (f.lastModified() == oldChecksum.lastModified && f.length() == oldChecksum.size) {
+                if (f.length() == oldChecksum.size) {
                     verifyFile(f, oldChecksum)
                     return@supplyAsync oldChecksum
                 } else {
@@ -141,7 +140,6 @@ class MainCommand : CliktCommand(
                     ChecksumRecord(
                         filename = f.name,
                         size = f.length(),
-                        lastModified = f.lastModified(),
                         hash = f.b3sum()
                     ).also {
                         val et = System.currentTimeMillis()

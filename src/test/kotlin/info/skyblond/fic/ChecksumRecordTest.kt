@@ -11,7 +11,6 @@ class ChecksumRecordTest {
         val obj = ChecksumRecord(
             filename = "test filename",
             size = 1234L,
-            lastModified = System.currentTimeMillis(),
             hash = "hash-here"
         )
 
