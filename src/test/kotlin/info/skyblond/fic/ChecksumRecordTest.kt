@@ -10,11 +10,11 @@ class ChecksumRecordTest {
     fun serialize() {
         val obj = ChecksumRecord(
             filename = "test filename",
-            size = 1234L,
             hash = "hash-here"
         )
 
         val serialized = obj.serialize()
+        println(serialized)
         val recover = ChecksumRecord.deserialize(serialized)
 
         assertEquals(obj, recover)
